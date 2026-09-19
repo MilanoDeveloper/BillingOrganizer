@@ -1,13 +1,15 @@
-<main class="shell">
+<main class="shell" [class.theme-dark]="theme() === 'dark'" [class.theme-light]="theme() === 'light'">
   <header class="topbar">
     <div class="brand"><span class="brand-mark">B</span><div><strong>Billing</strong><span>Organizer</span></div></div>
-    <div class="period">VISÃO GERAL <span>•</span> {{ summary().quantidade }} lançamentos</div>
+    <div class="topbar-actions"><div class="period">VISÃO GERAL <span>•</span> {{ summary().quantidade }} lançamentos</div><button class="theme-toggle" type="button" (click)="toggleTheme()" [attr.aria-label]="theme() === 'dark' ? 'Ativar tema claro' : 'Ativar tema escuro'"><span>{{ theme() === 'dark' ? '☼' : '☾' }}</span><small>{{ theme() === 'dark' ? 'LIGHT' : 'DARK' }}</small></button></div>
   </header>
 
   <section class="intro">
     <div><p class="eyebrow">Seu dinheiro, mais claro</p><h1>Controle o que<br><em>importa.</em></h1><p class="subtitle">Organize seus gastos sem transformar sua vida financeira em uma planilha.</p></div>
     <div class="import-box"><div class="import-icon">↑</div><div><strong>Importar extrato</strong><p>PDF ou TXT</p></div><label class="button secondary">Escolher arquivo<input type="file" accept=".pdf,.txt,application/pdf,text/plain" (change)="importFile($event)"></label></div>
   </section>
+
+  <section class="date-filter" aria-label="Filtro de período"><div><p class="eyebrow">Período</p><strong>Filtrar lançamentos</strong></div><label>De<input type="date" [(ngModel)]="dataInicio" name="dataInicio"></label><label>Até<input type="date" [(ngModel)]="dataFim" name="dataFim"></label><button class="button primary filter-button" type="button" (click)="applyDateFilter()">Aplicar filtro</button><button class="clear-button" type="button" (click)="clearDateFilter()">Limpar</button></section>
 
   @if (message()) { <div class="notice success">{{ message() }}</div> }
   @if (error()) { <div class="notice error">{{ error() }}</div> }
@@ -25,7 +27,11 @@
       @if (transactions().length) {
         <div class="transaction-list">
           @for (transaction of transactions(); track transaction.id) {
-            <div class="transaction"><div class="transaction-icon" [class.income]="transaction.valor > 0">{{ transaction.valor > 0 ? '+' : '-' }}</div><div class="transaction-info"><strong>{{ transaction.descricao }}</strong><span>{{ formatDate(transaction.data) }} · {{ transaction.categoria }}</span></div><strong class="amount" [class.income-text]="transaction.valor > 0">{{ transaction.valor > 0 ? '+' : '' }}{{ formatCurrency(transaction.valor) }}</strong></div>
+            @if (editingId() === transaction.id) {
+              <div class="transaction edit-transaction"><div class="transaction-icon" [class.income]="transaction.valor > 0">{{ transaction.valor > 0 ? '+' : '-' }}</div><div class="edit-fields"><input aria-label="Nome do lançamento" [(ngModel)]="editDraft.descricao"><select aria-label="Categoria do lançamento" [(ngModel)]="editDraft.categoria"><option>Outros</option><option>Contas fixas</option><option>Investimentos</option><option>Moradia</option><option>Alimentação</option><option>Transporte</option><option>Saúde</option><option>Lazer</option></select></div><button class="icon-button save" type="button" (click)="saveEdit(transaction)" title="Salvar">✓</button><button class="icon-button" type="button" (click)="cancelEdit()" title="Cancelar">×</button></div>
+            } @else {
+              <div class="transaction"><div class="transaction-icon" [class.income]="transaction.valor > 0">{{ transaction.valor > 0 ? '+' : '-' }}</div><div class="transaction-info"><strong>{{ transaction.descricao }}</strong><span>{{ formatDate(transaction.data) }} · {{ transaction.categoria }}</span></div><strong class="amount" [class.income-text]="transaction.valor > 0">{{ transaction.valor > 0 ? '+' : '' }}{{ formatCurrency(transaction.valor) }}</strong><button class="icon-button" type="button" (click)="startEdit(transaction)" title="Editar">✎</button></div>
+            }
           }
         </div>
       } @else { <div class="empty">Adicione uma conta ou importe seu primeiro extrato.</div> }

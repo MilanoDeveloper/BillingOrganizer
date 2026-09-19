@@ -4,7 +4,7 @@ from io import BytesIO
 import os
 import re
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from pypdf import PdfReader
@@ -35,6 +35,23 @@ class ManualTransaction(BaseModel):
     metodo_pagamento: str | None = Field(default=None, max_length=50)
 
 
+class TransactionUpdate(BaseModel):
+    descricao: str = Field(min_length=1, max_length=255)
+    categoria: str = Field(min_length=1, max_length=100)
+
+
+CATEGORY_RULES = {
+    "Investimentos": ("APLICACAO COFRINHOS", "INVESTIMENTO", "APLICACAO"),
+    "Contas fixas": (
+        "BOLETO BANCO VOLKSWAGEN",
+        "BOLETO CONDOMINIO",
+        "COMPANHIA DE GAS",
+        "COMGAS",
+        "PIX QRS TELEFONICA",
+    ),
+}
+
+
 def connection():
     return psycopg.connect(DATABASE_URL, row_factory=dict_row)
 
@@ -61,6 +78,14 @@ def parse_brazilian_amount(value: str) -> Decimal:
         return Decimal(normalized)
     except InvalidOperation as error:
         raise ValueError(f"Valor inválido: {value}") from error
+
+
+def categorize_description(description: str) -> str:
+    normalized = description.upper()
+    for category, keywords in CATEGORY_RULES.items():
+        if any(keyword in normalized for keyword in keywords):
+            return category
+    return "Outros"
 
 
 def extract_pdf_text(content: bytes, filename: str) -> str:
@@ -93,7 +118,7 @@ def parse_statement(text: str, origin: str) -> list[dict]:
                 "descricao": description[:255],
                 "valor": parse_brazilian_amount(match.group("amount")),
                 "origem": origin[:100],
-                "categoria": "Outros",
+                "categoria": categorize_description(description),
                 "metodo_pagamento": "Extrato",
                 "tipo_entrada": "PDF",
             }
@@ -131,23 +156,36 @@ def health() -> dict:
 
 
 @app.get("/api/transacoes")
-def list_transactions() -> list[dict]:
+def list_transactions(
+    data_inicio: date | None = Query(default=None),
+    data_fim: date | None = Query(default=None),
+) -> list[dict]:
+    if data_inicio and data_fim and data_inicio > data_fim:
+        raise HTTPException(status_code=400, detail="A data inicial deve ser anterior à data final.")
     with connection() as conn:
         rows = conn.execute(
             """
             SELECT id, data, descricao, valor, origem, categoria, metodo_pagamento, tipo_entrada
             FROM financeiro.transacoes
             WHERE usuario_id = %s
+              AND (%s::date IS NULL OR data >= %s::date)
+              AND (%s::date IS NULL OR data <= %s::date)
             ORDER BY data DESC, id DESC
             LIMIT 100
             """,
-            (DEFAULT_USER_ID,),
+            (DEFAULT_USER_ID, data_inicio, data_inicio, data_fim, data_fim),
         ).fetchall()
     return rows
 
 
 @app.get("/api/resumo")
-def summary() -> dict:
+def summary(
+    data_inicio: date | None = Query(default=None),
+    data_fim: date | None = Query(default=None),
+) -> dict:
+    if data_inicio and data_fim and data_inicio > data_fim:
+        raise HTTPException(status_code=400, detail="A data inicial deve ser anterior à data final.")
+    period_params = (DEFAULT_USER_ID, data_inicio, data_inicio, data_fim, data_fim)
     with connection() as conn:
         totals = conn.execute(
             """
@@ -156,32 +194,55 @@ def summary() -> dict:
               COALESCE(SUM(CASE WHEN valor > 0 THEN valor ELSE 0 END), 0) AS entradas,
               COUNT(*) AS quantidade
             FROM financeiro.transacoes
-            WHERE usuario_id = %s
+                        WHERE usuario_id = %s
+                              AND (%s::date IS NULL OR data >= %s::date)
+                              AND (%s::date IS NULL OR data <= %s::date)
             """,
-            (DEFAULT_USER_ID,),
+                        period_params,
         ).fetchone()
         categories = conn.execute(
             """
             SELECT categoria AS nome, COALESCE(SUM(ABS(valor)), 0) AS total
             FROM financeiro.transacoes
-            WHERE usuario_id = %s AND valor < 0
+                        WHERE usuario_id = %s AND valor < 0
+                              AND (%s::date IS NULL OR data >= %s::date)
+                              AND (%s::date IS NULL OR data <= %s::date)
             GROUP BY categoria
             ORDER BY total DESC
             """,
-            (DEFAULT_USER_ID,),
+                        period_params,
         ).fetchall()
         grouped = conn.execute(
             """
             SELECT descricao AS nome, COALESCE(SUM(ABS(valor)), 0) AS total, COUNT(*) AS ocorrencias
             FROM financeiro.transacoes
-            WHERE usuario_id = %s AND valor < 0
+                        WHERE usuario_id = %s AND valor < 0
+                              AND (%s::date IS NULL OR data >= %s::date)
+                              AND (%s::date IS NULL OR data <= %s::date)
             GROUP BY descricao
             ORDER BY total DESC
             LIMIT 8
             """,
-            (DEFAULT_USER_ID,),
+                        (DEFAULT_USER_ID, data_inicio, data_inicio, data_fim, data_fim),
         ).fetchall()
     return {"gastos": totals["gastos"], "entradas": totals["entradas"], "quantidade": totals["quantidade"], "categorias": categories, "maiores_gastos": grouped}
+
+
+@app.patch("/api/transacoes/{transaction_id}")
+def update_transaction(transaction_id: int, transaction: TransactionUpdate) -> dict:
+    with connection() as conn:
+        result = conn.execute(
+            """
+            UPDATE financeiro.transacoes
+            SET descricao = %s, categoria = %s
+            WHERE id = %s AND usuario_id = %s
+            RETURNING id, data, descricao, valor, origem, categoria, metodo_pagamento, tipo_entrada
+            """,
+            (transaction.descricao.strip(), transaction.categoria.strip(), transaction_id, DEFAULT_USER_ID),
+        ).fetchone()
+    if not result:
+        raise HTTPException(status_code=404, detail="Transação não encontrada.")
+    return result
 
 
 @app.post("/api/transacoes/manual", status_code=201)

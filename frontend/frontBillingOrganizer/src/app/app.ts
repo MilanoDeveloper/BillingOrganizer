@@ -1,5 +1,5 @@
 import { afterNextRender, Component, inject, signal } from '@angular/core';
-import { HttpClient } from '@angular/common/http';
+import { HttpClient, HttpParams } from '@angular/common/http';
 import { FormsModule } from '@angular/forms';
 
 interface Transaction {
@@ -31,24 +31,67 @@ export class App {
   protected readonly loading = signal(true);
   protected readonly message = signal('');
   protected readonly error = signal('');
+  protected readonly theme = signal<'dark' | 'light'>('dark');
   protected readonly transactions = signal<Transaction[]>([]);
+  protected readonly editingId = signal<number | null>(null);
   protected readonly summary = signal<Summary>({ gastos: 0, entradas: 0, quantidade: 0, categorias: [], maiores_gastos: [] });
+  protected dataInicio = '';
+  protected dataFim = '';
   protected manual = { descricao: '', valor: null as number | null, data: new Date().toISOString().slice(0, 10), categoria: 'Outros', metodo_pagamento: '' };
+  protected editDraft = { descricao: '', categoria: 'Outros' };
 
   constructor() {
-    afterNextRender(() => this.loadDashboard());
+    afterNextRender(() => {
+      const savedTheme = localStorage.getItem('billing-theme');
+      if (savedTheme === 'light' || savedTheme === 'dark') this.theme.set(savedTheme);
+      this.loadDashboard();
+    });
+  }
+
+  protected toggleTheme(): void {
+    const nextTheme = this.theme() === 'dark' ? 'light' : 'dark';
+    this.theme.set(nextTheme);
+    localStorage.setItem('billing-theme', nextTheme);
   }
 
   protected loadDashboard(): void {
     this.loading.set(true);
-    this.http.get<Summary>('/api/resumo').subscribe({
+    const params = this.periodParams();
+    this.http.get<Summary>('/api/resumo', { params }).subscribe({
       next: (summary) => this.summary.set(summary),
       error: () => this.error.set('Não foi possível conectar à API. Inicie o backend na porta 8000.'),
       complete: () => this.loading.set(false),
     });
-    this.http.get<Transaction[]>('/api/transacoes').subscribe({
+    this.http.get<Transaction[]>('/api/transacoes', { params }).subscribe({
       next: (transactions) => this.transactions.set(transactions),
     });
+  }
+
+  protected applyDateFilter(): void {
+    if ((this.dataInicio && !this.dataFim) || (!this.dataInicio && this.dataFim)) {
+      this.error.set('Informe a data inicial e a data final.');
+      return;
+    }
+    if (this.dataInicio && this.dataFim && this.dataInicio > this.dataFim) {
+      this.error.set('A data inicial deve ser anterior à data final.');
+      return;
+    }
+    this.error.set('');
+    this.message.set(this.dataInicio ? 'Período aplicado.' : 'Exibindo todos os lançamentos.');
+    this.loadDashboard();
+  }
+
+  protected clearDateFilter(): void {
+    this.dataInicio = '';
+    this.dataFim = '';
+    this.applyDateFilter();
+  }
+
+  private periodParams(): HttpParams {
+    let params = new HttpParams();
+    if (this.dataInicio) params = params.set('data_inicio', this.dataInicio);
+    if (this.dataFim) params = params.set('data_fim', this.dataFim);
+    return params;
   }
 
   protected addManual(): void {
@@ -81,6 +124,31 @@ export class App {
         this.loadDashboard();
       },
       error: (response) => this.error.set(response.error?.detail ?? 'Não foi possível importar o arquivo.'),
+    });
+  }
+
+  protected startEdit(transaction: Transaction): void {
+    this.editingId.set(transaction.id);
+    this.editDraft = { descricao: transaction.descricao, categoria: transaction.categoria };
+  }
+
+  protected cancelEdit(): void {
+    this.editingId.set(null);
+  }
+
+  protected saveEdit(transaction: Transaction): void {
+    if (!this.editDraft.descricao.trim()) {
+      this.error.set('O nome da conta não pode ficar vazio.');
+      return;
+    }
+    this.http.patch(`/api/transacoes/${transaction.id}`, this.editDraft).subscribe({
+      next: () => {
+        this.message.set('Lançamento atualizado.');
+        this.error.set('');
+        this.editingId.set(null);
+        this.loadDashboard();
+      },
+      error: () => this.error.set('Não foi possível atualizar o lançamento.'),
     });
   }
 
