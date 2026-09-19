@@ -1,17 +1,29 @@
-name: Validar Pull Request para develop
+name: Validar Pull Request
 
 on:
   pull_request:
     branches:
       - develop
+      - main
     types: [opened, synchronize, reopened]
 
 permissions:
   contents: read
 
 jobs:
+  validate-source:
+    name: Origem permitida
+    runs-on: ubuntu-latest
+    steps:
+      - name: Permitir apenas develop para main
+        if: github.base_ref == 'main' && github.head_ref != 'develop'
+        run: |
+          echo "Somente a branch develop pode abrir Pull Request para main."
+          exit 1
+
   frontend-build:
     name: Build do frontend
+    needs: validate-source
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -35,6 +47,7 @@ jobs:
 
   backend-build:
     name: Validar backend
+    needs: validate-source
     runs-on: ubuntu-latest
     defaults:
       run:
