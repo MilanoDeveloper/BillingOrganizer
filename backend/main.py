@@ -1,9 +1,11 @@
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from io import BytesIO
+import csv
 import hashlib
 import os
 import re
+import unicodedata
 
 from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -110,11 +112,19 @@ def ensure_default_user() -> None:
 
 
 def parse_brazilian_amount(value: str) -> Decimal:
-    normalized = value.strip().replace(".", "").replace(",", ".")
+    normalized = value.strip().replace("R$", "")
+    normalized = "".join(normalized.split())
+    if "," in normalized:
+        normalized = normalized.replace(".", "").replace(",", ".")
     try:
         return Decimal(normalized)
     except InvalidOperation as error:
         raise ValueError(f"Valor inválido: {value}") from error
+
+
+def normalize_description(description: str) -> str:
+    """Remove a data de referência anexada ao fim da descrição do extrato."""
+    return re.sub(r"\s*\d{2}/\d{2}$", "", description).strip()
 
 
 def categorize_description(description: str) -> str:
@@ -135,6 +145,51 @@ def extract_pdf_text(content: bytes, filename: str) -> str:
         raise HTTPException(status_code=400, detail="Não foi possível ler o PDF.") from error
 
 
+def parse_csv_statement(content: bytes, origin: str) -> list[dict]:
+    text = content.decode("utf-8-sig", errors="replace")
+    try:
+        dialect = csv.Sniffer().sniff(text[:4096], delimiters=";,\t,")
+    except csv.Error:
+        dialect = csv.excel()
+        dialect.delimiter = ";"
+    rows = csv.DictReader(text.splitlines(), dialect=dialect)
+    if not rows.fieldnames:
+        raise HTTPException(status_code=400, detail="O CSV não possui cabeçalho.")
+    headers = {
+        re.sub(r"[^a-z0-9]", "", unicodedata.normalize("NFKD", header.lower()).encode("ascii", "ignore").decode()) : header
+        for header in rows.fieldnames if header
+    }
+    date_key = headers.get("data") or headers.get("date")
+    description_key = headers.get("descricao") or headers.get("movimentacao") or headers.get("description") or headers.get("nome")
+    amount_key = headers.get("valor") or headers.get("amount")
+    payment_key = headers.get("meiodepagamento") or headers.get("metodopagamento") or headers.get("paymentmethod")
+    if not date_key or not description_key or not amount_key:
+        raise HTTPException(status_code=400, detail="O CSV deve conter as colunas data, descricao e valor.")
+    transactions = []
+    for row in rows:
+        raw_date = (row.get(date_key) or "").strip()
+        raw_description = normalize_description((row.get(description_key) or "").strip())
+        raw_amount = (row.get(amount_key) or "").strip()
+        if not raw_date or not raw_description or not raw_amount:
+            continue
+        try:
+            transaction_date = datetime.strptime(raw_date, "%d/%m/%Y").date() if "/" in raw_date else date.fromisoformat(raw_date)
+            amount = parse_brazilian_amount(raw_amount)
+        except (ValueError, InvalidOperation) as error:
+            raise HTTPException(status_code=400, detail=f"Linha inválida no CSV: {raw_date}, {raw_amount}.") from error
+        transactions.append({
+            "usuario_id": DEFAULT_USER_ID,
+            "data": transaction_date,
+            "descricao": raw_description[:255],
+            "valor": amount,
+            "origem": origin[:100],
+            "categoria": categorize_description(raw_description),
+            "metodo_pagamento": (row.get(payment_key) or "CSV").strip() if payment_key else "CSV",
+            "tipo_entrada": "CSV",
+        })
+    return transactions
+
+
 def parse_statement(text: str, origin: str) -> list[dict]:
     transactions = []
     line_pattern = re.compile(
@@ -145,7 +200,7 @@ def parse_statement(text: str, origin: str) -> list[dict]:
         match = line_pattern.match(line)
         if not match or "SALDO DO DIA" in match.group("description").upper():
             continue
-        description = match.group("description").strip()
+        description = normalize_description(match.group("description"))
         if not description:
             continue
         transactions.append(
@@ -218,21 +273,25 @@ def create_category(category: CategoryCreate) -> dict:
 def list_transactions(
     data_inicio: date | None = Query(default=None),
     data_fim: date | None = Query(default=None),
+    busca: str | None = Query(default=None, max_length=100),
 ) -> list[dict]:
     if data_inicio and data_fim and data_inicio > data_fim:
         raise HTTPException(status_code=400, detail="A data inicial deve ser anterior à data final.")
     with connection() as conn:
         rows = conn.execute(
             """
-            SELECT id, data, descricao, valor, origem, categoria, metodo_pagamento, tipo_entrada
+                 SELECT id, data,
+                     regexp_replace(descricao, '[[:space:]]*[0-9]{2}/[0-9]{2}$', '') AS descricao,
+                     valor, origem, categoria, metodo_pagamento, tipo_entrada
             FROM financeiro.transacoes
             WHERE usuario_id = %s
               AND (%s::date IS NULL OR data >= %s::date)
               AND (%s::date IS NULL OR data <= %s::date)
+              AND (%s::text IS NULL OR regexp_replace(descricao, '[[:space:]]*[0-9]{2}/[0-9]{2}$', '') ILIKE '%%' || %s::text || '%%')
             ORDER BY data DESC, id DESC
             LIMIT 100
             """,
-            (DEFAULT_USER_ID, data_inicio, data_inicio, data_fim, data_fim),
+            (DEFAULT_USER_ID, data_inicio, data_inicio, data_fim, data_fim, busca, busca),
         ).fetchall()
     return rows
 
@@ -241,10 +300,11 @@ def list_transactions(
 def summary(
     data_inicio: date | None = Query(default=None),
     data_fim: date | None = Query(default=None),
+    busca: str | None = Query(default=None, max_length=100),
 ) -> dict:
     if data_inicio and data_fim and data_inicio > data_fim:
         raise HTTPException(status_code=400, detail="A data inicial deve ser anterior à data final.")
-    period_params = (DEFAULT_USER_ID, data_inicio, data_inicio, data_fim, data_fim)
+    period_params = (DEFAULT_USER_ID, data_inicio, data_inicio, data_fim, data_fim, busca, busca)
     with connection() as conn:
         totals = conn.execute(
             """
@@ -256,6 +316,7 @@ def summary(
                         WHERE usuario_id = %s
                               AND (%s::date IS NULL OR data >= %s::date)
                               AND (%s::date IS NULL OR data <= %s::date)
+                              AND (%s::text IS NULL OR regexp_replace(descricao, '[[:space:]]*[0-9]{2}/[0-9]{2}$', '') ILIKE '%%' || %s::text || '%%')
             """,
                         period_params,
         ).fetchone()
@@ -266,6 +327,7 @@ def summary(
                         WHERE usuario_id = %s AND valor < 0
                               AND (%s::date IS NULL OR data >= %s::date)
                               AND (%s::date IS NULL OR data <= %s::date)
+                              AND (%s::text IS NULL OR regexp_replace(descricao, '[[:space:]]*[0-9]{2}/[0-9]{2}$', '') ILIKE '%%' || %s::text || '%%')
             GROUP BY categoria
             ORDER BY total DESC
             """,
@@ -273,16 +335,18 @@ def summary(
         ).fetchall()
         grouped = conn.execute(
             """
-            SELECT descricao AS nome, COALESCE(SUM(ABS(valor)), 0) AS total, COUNT(*) AS ocorrencias
+                 SELECT regexp_replace(descricao, '[[:space:]]*[0-9]{2}/[0-9]{2}$', '') AS nome,
+                     COALESCE(SUM(ABS(valor)), 0) AS total, COUNT(*) AS ocorrencias
             FROM financeiro.transacoes
                         WHERE usuario_id = %s AND valor < 0
                               AND (%s::date IS NULL OR data >= %s::date)
                               AND (%s::date IS NULL OR data <= %s::date)
-            GROUP BY descricao
+                              AND (%s::text IS NULL OR regexp_replace(descricao, '[[:space:]]*[0-9]{2}/[0-9]{2}$', '') ILIKE '%%' || %s::text || '%%')
+            GROUP BY regexp_replace(descricao, '[[:space:]]*[0-9]{2}/[0-9]{2}$', '')
             ORDER BY total DESC
             LIMIT 8
             """,
-                        (DEFAULT_USER_ID, data_inicio, data_inicio, data_fim, data_fim),
+                        period_params,
         ).fetchall()
     return {"gastos": totals["gastos"], "entradas": totals["entradas"], "quantidade": totals["quantidade"], "categorias": categories, "maiores_gastos": grouped}
 
@@ -292,16 +356,52 @@ def update_transaction(transaction_id: int, transaction: TransactionUpdate) -> d
     with connection() as conn:
         result = conn.execute(
             """
-            UPDATE financeiro.transacoes
+            WITH target AS (
+                SELECT regexp_replace(descricao, '[[:space:]]*[0-9]{2}/[0-9]{2}$', '') AS nome_normalizado
+                FROM financeiro.transacoes
+                WHERE id = %s AND usuario_id = %s
+            )
+            UPDATE financeiro.transacoes AS t
             SET descricao = %s, categoria = %s
-            WHERE id = %s AND usuario_id = %s
-            RETURNING id, data, descricao, valor, origem, categoria, metodo_pagamento, tipo_entrada
+            WHERE t.usuario_id = %s
+              AND regexp_replace(t.descricao, '[[:space:]]*[0-9]{2}/[0-9]{2}$', '') = (SELECT nome_normalizado FROM target)
+            RETURNING t.id, t.data, t.descricao, t.valor, t.origem, t.categoria, t.metodo_pagamento, t.tipo_entrada
             """,
-            (transaction.descricao.strip(), transaction.categoria.strip(), transaction_id, DEFAULT_USER_ID),
+            (transaction_id, DEFAULT_USER_ID, transaction.descricao.strip(), transaction.categoria.strip(), DEFAULT_USER_ID),
+        ).fetchall()
+    if not result:
+        raise HTTPException(status_code=404, detail="Transação não encontrada.")
+    return {"message": f"{len(result)} lançamentos atualizados.", "atualizados": len(result)}
+
+
+@app.delete("/api/transacoes/{transaction_id}")
+def delete_transaction(transaction_id: int) -> dict:
+    with connection() as conn:
+        result = conn.execute(
+            """
+            DELETE FROM financeiro.transacoes
+            WHERE id = %s AND usuario_id = %s
+            RETURNING id
+            """,
+            (transaction_id, DEFAULT_USER_ID),
         ).fetchone()
     if not result:
         raise HTTPException(status_code=404, detail="Transação não encontrada.")
-    return result
+    return {"message": "Lançamento excluído com sucesso."}
+
+
+@app.delete("/api/transacoes")
+def delete_all_transactions() -> dict:
+    with connection() as conn:
+        result = conn.execute(
+            "DELETE FROM financeiro.transacoes WHERE usuario_id = %s RETURNING id",
+            (DEFAULT_USER_ID,),
+        ).fetchall()
+        conn.execute(
+            "DELETE FROM financeiro.importacoes WHERE usuario_id = %s",
+            (DEFAULT_USER_ID,),
+        )
+    return {"message": f"{len(result)} lançamentos excluídos.", "excluidos": len(result)}
 
 
 @app.post("/api/transacoes/manual", status_code=201)
@@ -322,10 +422,10 @@ def create_manual(transaction: ManualTransaction) -> dict:
 
 @app.post("/api/importar", status_code=201)
 async def import_statement(file: UploadFile = File(...)) -> dict:
-    if not file.filename or not file.filename.lower().endswith((".pdf", ".txt")):
-        raise HTTPException(status_code=400, detail="Envie um arquivo PDF ou TXT.")
+    if not file.filename or not file.filename.lower().endswith((".pdf", ".txt", ".csv")):
+        raise HTTPException(status_code=400, detail="Envie um arquivo PDF, TXT ou CSV.")
     content = await file.read()
-    transactions = parse_statement(extract_pdf_text(content, file.filename), file.filename)
+    transactions = parse_csv_statement(content, file.filename) if file.filename.lower().endswith(".csv") else parse_statement(extract_pdf_text(content, file.filename), file.filename)
     file_hash = hashlib.sha256(content).hexdigest()
     try:
         with connection() as conn:
