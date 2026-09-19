@@ -20,6 +20,11 @@ interface Summary {
   maiores_gastos: { nome: string; total: number; ocorrencias: number }[];
 }
 
+interface Category {
+  id: number;
+  nome: string;
+}
+
 @Component({
   imports: [FormsModule],
   selector: 'app-root',
@@ -32,19 +37,23 @@ export class App {
   protected readonly message = signal('');
   protected readonly error = signal('');
   protected readonly theme = signal<'dark' | 'light'>('dark');
+  protected readonly transactionsExpanded = signal(true);
   protected readonly transactions = signal<Transaction[]>([]);
+  protected readonly categories = signal<Category[]>([]);
   protected readonly editingId = signal<number | null>(null);
   protected readonly summary = signal<Summary>({ gastos: 0, entradas: 0, quantidade: 0, categorias: [], maiores_gastos: [] });
   protected dataInicio = '';
   protected dataFim = '';
   protected manual = { descricao: '', valor: null as number | null, data: new Date().toISOString().slice(0, 10), categoria: 'Outros', metodo_pagamento: '' };
   protected editDraft = { descricao: '', categoria: 'Outros' };
+  protected newCategory = '';
 
   constructor() {
     afterNextRender(() => {
       const savedTheme = localStorage.getItem('billing-theme');
       if (savedTheme === 'light' || savedTheme === 'dark') this.theme.set(savedTheme);
       this.loadDashboard();
+      this.loadCategories();
     });
   }
 
@@ -52,6 +61,25 @@ export class App {
     const nextTheme = this.theme() === 'dark' ? 'light' : 'dark';
     this.theme.set(nextTheme);
     localStorage.setItem('billing-theme', nextTheme);
+  }
+
+  protected toggleTransactions(): void {
+    this.transactionsExpanded.update((expanded) => !expanded);
+  }
+
+  protected categoryChartStyle(): string {
+    const categories = this.summary().categorias;
+    const total = categories.reduce((sum, category) => sum + category.total, 0);
+    if (!total) return 'conic-gradient(#30423b 0 100%)';
+    let start = 0;
+    const colors = ['#72f58b', '#a76cff', '#ffcf5c', '#ff6f91', '#57c7ff', '#d7f171'];
+    const segments = categories.map((category, index) => {
+      const end = start + (category.total / total) * 100;
+      const segment = `${colors[index % colors.length]} ${start}% ${end}%`;
+      start = end;
+      return segment;
+    });
+    return `conic-gradient(${segments.join(', ')})`;
   }
 
   protected loadDashboard(): void {
@@ -64,6 +92,31 @@ export class App {
     });
     this.http.get<Transaction[]>('/api/transacoes', { params }).subscribe({
       next: (transactions) => this.transactions.set(transactions),
+    });
+  }
+
+  protected loadCategories(): void {
+    this.http.get<Category[]>('/api/categorias').subscribe({
+      next: (categories) => this.categories.set(categories),
+      error: () => this.error.set('Não foi possível carregar as categorias.'),
+    });
+  }
+
+  protected addCategory(): void {
+    const name = this.newCategory.trim();
+    if (!name) {
+      this.error.set('Informe o nome da categoria.');
+      return;
+    }
+    this.http.post<Category>('/api/categorias', { nome: name }).subscribe({
+      next: (category) => {
+        this.categories.update((categories) => [...categories, category].sort((a, b) => a.nome.localeCompare(b.nome)));
+        this.manual.categoria = category.nome;
+        this.newCategory = '';
+        this.message.set('Categoria criada.');
+        this.error.set('');
+      },
+      error: (response) => this.error.set(response.error?.detail ?? 'Não foi possível criar a categoria.'),
     });
   }
 

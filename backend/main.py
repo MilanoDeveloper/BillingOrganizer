@@ -1,6 +1,7 @@
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from io import BytesIO
+import hashlib
 import os
 import re
 
@@ -9,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from pypdf import PdfReader
 import psycopg
+from psycopg.errors import UniqueViolation
 from psycopg.rows import dict_row
 
 DATABASE_URL = os.getenv(
@@ -40,6 +42,10 @@ class TransactionUpdate(BaseModel):
     categoria: str = Field(min_length=1, max_length=100)
 
 
+class CategoryCreate(BaseModel):
+    nome: str = Field(min_length=1, max_length=100)
+
+
 CATEGORY_RULES = {
     "Investimentos": ("APLICACAO COFRINHOS", "INVESTIMENTO", "APLICACAO"),
     "Contas fixas": (
@@ -69,6 +75,37 @@ def ensure_default_user() -> None:
             )
             cursor.execute(
                 "SELECT setval(pg_get_serial_sequence('financeiro.usuarios', 'id'), GREATEST((SELECT MAX(id) FROM financeiro.usuarios), 1))"
+            )
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS financeiro.categorias (
+                    id SERIAL PRIMARY KEY,
+                    usuario_id INT NOT NULL REFERENCES financeiro.usuarios(id) ON DELETE CASCADE,
+                    nome VARCHAR(100) NOT NULL,
+                    criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    CONSTRAINT uk_categoria_usuario_nome UNIQUE (usuario_id, nome)
+                )
+                """
+            )
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS financeiro.importacoes (
+                    id SERIAL PRIMARY KEY,
+                    usuario_id INT NOT NULL REFERENCES financeiro.usuarios(id) ON DELETE CASCADE,
+                    nome_arquivo VARCHAR(255) NOT NULL,
+                    hash_arquivo VARCHAR(64) NOT NULL,
+                    importado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    CONSTRAINT uk_importacao_usuario_hash UNIQUE (usuario_id, hash_arquivo)
+                )
+                """
+            )
+            cursor.executemany(
+                """
+                INSERT INTO financeiro.categorias (usuario_id, nome)
+                VALUES (%s, %s)
+                ON CONFLICT (usuario_id, nome) DO NOTHING
+                """,
+                [(DEFAULT_USER_ID, name) for name in ("Outros", "Moradia", "Alimentação", "Transporte", "Saúde", "Lazer", "Investimentos", "Contas fixas")],
             )
 
 
@@ -153,6 +190,28 @@ def health() -> dict:
     with connection() as conn:
         conn.execute("SELECT 1")
     return {"status": "ok"}
+
+
+@app.get("/api/categorias")
+def list_categories() -> list[dict]:
+    with connection() as conn:
+        return conn.execute(
+            "SELECT id, nome FROM financeiro.categorias WHERE usuario_id = %s ORDER BY nome",
+            (DEFAULT_USER_ID,),
+        ).fetchall()
+
+
+@app.post("/api/categorias", status_code=201)
+def create_category(category: CategoryCreate) -> dict:
+    name = category.nome.strip()
+    try:
+        with connection() as conn:
+            return conn.execute(
+                "INSERT INTO financeiro.categorias (usuario_id, nome) VALUES (%s, %s) RETURNING id, nome",
+                (DEFAULT_USER_ID, name),
+            ).fetchone()
+    except UniqueViolation as error:
+        raise HTTPException(status_code=409, detail="Essa categoria já existe.") from error
 
 
 @app.get("/api/transacoes")
@@ -267,5 +326,25 @@ async def import_statement(file: UploadFile = File(...)) -> dict:
         raise HTTPException(status_code=400, detail="Envie um arquivo PDF ou TXT.")
     content = await file.read()
     transactions = parse_statement(extract_pdf_text(content, file.filename), file.filename)
-    imported = insert_transactions(transactions)
+    file_hash = hashlib.sha256(content).hexdigest()
+    try:
+        with connection() as conn:
+            conn.execute(
+                "INSERT INTO financeiro.importacoes (usuario_id, nome_arquivo, hash_arquivo) VALUES (%s, %s, %s)",
+                (DEFAULT_USER_ID, file.filename[:255], file_hash),
+            )
+            if transactions:
+                with conn.cursor() as cursor:
+                    cursor.executemany(
+                        """
+                        INSERT INTO financeiro.transacoes
+                        (usuario_id, data, descricao, valor, origem, categoria, metodo_pagamento, tipo_entrada)
+                        VALUES (%(usuario_id)s, %(data)s, %(descricao)s, %(valor)s, %(origem)s,
+                                %(categoria)s, %(metodo_pagamento)s, %(tipo_entrada)s)
+                        """,
+                        transactions,
+                    )
+            imported = len(transactions)
+    except UniqueViolation as error:
+        raise HTTPException(status_code=409, detail="Este arquivo já foi importado anteriormente.") from error
     return {"message": f"{imported} lançamentos importados.", "importados": imported}
