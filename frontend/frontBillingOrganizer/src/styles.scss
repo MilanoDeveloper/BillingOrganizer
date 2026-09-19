@@ -1,1 +1,9 @@
-/* You can add global styles to this file, and also import other style files */
+:root {
+	font-family: 'DM Sans', 'Segoe UI', sans-serif;
+	color: #17231e;
+	background: #f4f1e8;
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; min-width: 320px; }
+button, input, select { font: inherit; }
