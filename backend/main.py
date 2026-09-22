@@ -2,12 +2,14 @@ from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from io import BytesIO
 import csv
+import base64
 import hashlib
 import os
 import re
+import secrets
 import unicodedata
 
-from fastapi import FastAPI, File, HTTPException, Query, UploadFile
+from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from pypdf import PdfReader
@@ -20,6 +22,8 @@ DATABASE_URL = os.getenv(
     "postgresql://postgres:abc123@localhost:5432/postgres",
 )
 DEFAULT_USER_ID = 1
+SESSION_COOKIE = "billing_session"
+SESSION_DAYS = 30
 
 app = FastAPI(title="Billing Organizer API")
 app.add_middleware(
@@ -48,6 +52,17 @@ class CategoryCreate(BaseModel):
     nome: str = Field(min_length=1, max_length=100)
 
 
+class AccountCreate(BaseModel):
+    nome: str = Field(min_length=1, max_length=120)
+    email: str = Field(min_length=5, max_length=255)
+    senha: str = Field(min_length=8, max_length=128)
+
+
+class LoginRequest(BaseModel):
+    email: str = Field(min_length=5, max_length=255)
+    senha: str = Field(min_length=1, max_length=128)
+
+
 CATEGORY_RULES = {
     "Investimentos": ("APLICACAO COFRINHOS", "INVESTIMENTO", "APLICACAO"),
     "Contas fixas": (
@@ -62,6 +77,52 @@ CATEGORY_RULES = {
 
 def connection():
     return psycopg.connect(DATABASE_URL, row_factory=dict_row)
+
+
+def hash_password(password: str) -> str:
+    salt = os.urandom(16)
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, 240_000)
+    return f"pbkdf2_sha256$240000${base64.b64encode(salt).decode()}${base64.b64encode(digest).decode()}"
+
+
+def verify_password(password: str, encoded: str) -> bool:
+    try:
+        algorithm, rounds, salt, expected = encoded.split("$", 3)
+        if algorithm != "pbkdf2_sha256":
+            return False
+        digest = hashlib.pbkdf2_hmac("sha256", password.encode(), base64.b64decode(salt), int(rounds))
+        return secrets.compare_digest(base64.b64encode(digest).decode(), expected)
+    except (ValueError, TypeError):
+        return False
+
+
+def create_session(response: Response, user_id: int) -> None:
+    session_id = secrets.token_urlsafe(48)
+    with connection() as conn:
+        conn.execute(
+            "INSERT INTO financeiro.sessoes (id, usuario_id, expira_em) VALUES (%s, %s, CURRENT_TIMESTAMP + INTERVAL '30 days')",
+            (session_id, user_id),
+        )
+    response.set_cookie(SESSION_COOKIE, session_id, max_age=SESSION_DAYS * 86400, httponly=True, samesite="lax")
+
+
+def current_user(request: Request) -> dict:
+    session_id = request.cookies.get(SESSION_COOKIE)
+    if not session_id:
+        raise HTTPException(status_code=401, detail="Faça login para continuar.")
+    with connection() as conn:
+        user = conn.execute(
+            """
+            SELECT u.id, u.nome, u.email
+            FROM financeiro.sessoes s
+            JOIN financeiro.usuarios u ON u.id = s.usuario_id
+            WHERE s.id = %s AND s.expira_em > CURRENT_TIMESTAMP
+            """,
+            (session_id,),
+        ).fetchone()
+    if not user:
+        raise HTTPException(status_code=401, detail="Sua sessão expirou. Faça login novamente.")
+    return user
 
 
 def ensure_default_user() -> None:
@@ -98,6 +159,16 @@ def ensure_default_user() -> None:
                     hash_arquivo VARCHAR(64) NOT NULL,
                     importado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     CONSTRAINT uk_importacao_usuario_hash UNIQUE (usuario_id, hash_arquivo)
+                )
+                """
+            )
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS financeiro.sessoes (
+                    id VARCHAR(64) PRIMARY KEY,
+                    usuario_id INT NOT NULL REFERENCES financeiro.usuarios(id) ON DELETE CASCADE,
+                    criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    expira_em TIMESTAMP NOT NULL
                 )
                 """
             )
@@ -145,7 +216,7 @@ def extract_pdf_text(content: bytes, filename: str) -> str:
         raise HTTPException(status_code=400, detail="Não foi possível ler o PDF.") from error
 
 
-def parse_csv_statement(content: bytes, origin: str) -> list[dict]:
+def parse_csv_statement(content: bytes, origin: str, user_id: int) -> list[dict]:
     text = content.decode("utf-8-sig", errors="replace")
     try:
         dialect = csv.Sniffer().sniff(text[:4096], delimiters=";,\t,")
@@ -178,7 +249,7 @@ def parse_csv_statement(content: bytes, origin: str) -> list[dict]:
         except (ValueError, InvalidOperation) as error:
             raise HTTPException(status_code=400, detail=f"Linha inválida no CSV: {raw_date}, {raw_amount}.") from error
         transactions.append({
-            "usuario_id": DEFAULT_USER_ID,
+            "usuario_id": user_id,
             "data": transaction_date,
             "descricao": raw_description[:255],
             "valor": amount,
@@ -190,7 +261,7 @@ def parse_csv_statement(content: bytes, origin: str) -> list[dict]:
     return transactions
 
 
-def parse_statement(text: str, origin: str) -> list[dict]:
+def parse_statement(text: str, origin: str, user_id: int) -> list[dict]:
     transactions = []
     line_pattern = re.compile(
         r"^(?P<day>\d{2}/\d{2}/\d{4})\s+(?P<description>.+?)\s+(?P<amount>-?\d{1,3}(?:\.\d{3})*,\d{2})$"
@@ -205,7 +276,7 @@ def parse_statement(text: str, origin: str) -> list[dict]:
             continue
         transactions.append(
             {
-                "usuario_id": DEFAULT_USER_ID,
+                "usuario_id": user_id,
                 "data": datetime.strptime(match.group("day"), "%d/%m/%Y").date(),
                 "descricao": description[:255],
                 "valor": parse_brazilian_amount(match.group("amount")),
@@ -247,23 +318,74 @@ def health() -> dict:
     return {"status": "ok"}
 
 
+@app.post("/api/auth/cadastro", status_code=201)
+def register(account: AccountCreate, response: Response) -> dict:
+    email = account.email.strip().lower()
+    name = account.nome.strip()
+    if not name or not email:
+        raise HTTPException(status_code=400, detail="Informe nome e e-mail.")
+    try:
+        with connection() as conn:
+            user = conn.execute(
+                "INSERT INTO financeiro.usuarios (nome, email, senha_hash) VALUES (%s, %s, %s) RETURNING id, nome, email",
+                (name, email, hash_password(account.senha)),
+            ).fetchone()
+            with conn.cursor() as cursor:
+                cursor.executemany(
+                    "INSERT INTO financeiro.categorias (usuario_id, nome) VALUES (%s, %s)",
+                    [(user["id"], category) for category in ("Outros", "Moradia", "Alimentação", "Transporte", "Saúde", "Lazer", "Investimentos", "Contas fixas")],
+                )
+    except UniqueViolation as error:
+        raise HTTPException(status_code=409, detail="Já existe uma conta com esse e-mail.") from error
+    create_session(response, user["id"])
+    return user
+
+
+@app.post("/api/auth/login")
+def login(credentials: LoginRequest, response: Response) -> dict:
+    with connection() as conn:
+        user = conn.execute(
+            "SELECT id, nome, email, senha_hash FROM financeiro.usuarios WHERE lower(email) = lower(%s)",
+            (credentials.email.strip(),),
+        ).fetchone()
+    if not user or not verify_password(credentials.senha, user["senha_hash"]):
+        raise HTTPException(status_code=401, detail="E-mail ou senha inválidos.")
+    create_session(response, user["id"])
+    return {"id": user["id"], "nome": user["nome"], "email": user["email"]}
+
+
+@app.get("/api/auth/me")
+def me(user: dict = Depends(current_user)) -> dict:
+    return user
+
+
+@app.post("/api/auth/logout")
+def logout(request: Request, response: Response) -> dict:
+    session_id = request.cookies.get(SESSION_COOKIE)
+    if session_id:
+        with connection() as conn:
+            conn.execute("DELETE FROM financeiro.sessoes WHERE id = %s", (session_id,))
+    response.delete_cookie(SESSION_COOKIE)
+    return {"message": "Sessão encerrada."}
+
+
 @app.get("/api/categorias")
-def list_categories() -> list[dict]:
+def list_categories(user: dict = Depends(current_user)) -> list[dict]:
     with connection() as conn:
         return conn.execute(
             "SELECT id, nome FROM financeiro.categorias WHERE usuario_id = %s ORDER BY nome",
-            (DEFAULT_USER_ID,),
+            (user["id"],),
         ).fetchall()
 
 
 @app.post("/api/categorias", status_code=201)
-def create_category(category: CategoryCreate) -> dict:
+def create_category(category: CategoryCreate, user: dict = Depends(current_user)) -> dict:
     name = category.nome.strip()
     try:
         with connection() as conn:
             return conn.execute(
                 "INSERT INTO financeiro.categorias (usuario_id, nome) VALUES (%s, %s) RETURNING id, nome",
-                (DEFAULT_USER_ID, name),
+                (user["id"], name),
             ).fetchone()
     except UniqueViolation as error:
         raise HTTPException(status_code=409, detail="Essa categoria já existe.") from error
@@ -274,6 +396,7 @@ def list_transactions(
     data_inicio: date | None = Query(default=None),
     data_fim: date | None = Query(default=None),
     busca: str | None = Query(default=None, max_length=100),
+    user: dict = Depends(current_user),
 ) -> list[dict]:
     if data_inicio and data_fim and data_inicio > data_fim:
         raise HTTPException(status_code=400, detail="A data inicial deve ser anterior à data final.")
@@ -291,7 +414,7 @@ def list_transactions(
             ORDER BY data DESC, id DESC
             LIMIT 100
             """,
-            (DEFAULT_USER_ID, data_inicio, data_inicio, data_fim, data_fim, busca, busca),
+            (user["id"], data_inicio, data_inicio, data_fim, data_fim, busca, busca),
         ).fetchall()
     return rows
 
@@ -301,10 +424,11 @@ def summary(
     data_inicio: date | None = Query(default=None),
     data_fim: date | None = Query(default=None),
     busca: str | None = Query(default=None, max_length=100),
+    user: dict = Depends(current_user),
 ) -> dict:
     if data_inicio and data_fim and data_inicio > data_fim:
         raise HTTPException(status_code=400, detail="A data inicial deve ser anterior à data final.")
-    period_params = (DEFAULT_USER_ID, data_inicio, data_inicio, data_fim, data_fim, busca, busca)
+    period_params = (user["id"], data_inicio, data_inicio, data_fim, data_fim, busca, busca)
     with connection() as conn:
         totals = conn.execute(
             """
@@ -352,7 +476,7 @@ def summary(
 
 
 @app.patch("/api/transacoes/{transaction_id}")
-def update_transaction(transaction_id: int, transaction: TransactionUpdate) -> dict:
+def update_transaction(transaction_id: int, transaction: TransactionUpdate, user: dict = Depends(current_user)) -> dict:
     with connection() as conn:
         result = conn.execute(
             """
@@ -367,7 +491,7 @@ def update_transaction(transaction_id: int, transaction: TransactionUpdate) -> d
               AND regexp_replace(t.descricao, '[[:space:]]*[0-9]{2}/[0-9]{2}$', '') = (SELECT nome_normalizado FROM target)
             RETURNING t.id, t.data, t.descricao, t.valor, t.origem, t.categoria, t.metodo_pagamento, t.tipo_entrada
             """,
-            (transaction_id, DEFAULT_USER_ID, transaction.descricao.strip(), transaction.categoria.strip(), DEFAULT_USER_ID),
+            (transaction_id, user["id"], transaction.descricao.strip(), transaction.categoria.strip(), user["id"]),
         ).fetchall()
     if not result:
         raise HTTPException(status_code=404, detail="Transação não encontrada.")
@@ -375,7 +499,7 @@ def update_transaction(transaction_id: int, transaction: TransactionUpdate) -> d
 
 
 @app.delete("/api/transacoes/{transaction_id}")
-def delete_transaction(transaction_id: int) -> dict:
+def delete_transaction(transaction_id: int, user: dict = Depends(current_user)) -> dict:
     with connection() as conn:
         result = conn.execute(
             """
@@ -383,7 +507,7 @@ def delete_transaction(transaction_id: int) -> dict:
             WHERE id = %s AND usuario_id = %s
             RETURNING id
             """,
-            (transaction_id, DEFAULT_USER_ID),
+            (transaction_id, user["id"]),
         ).fetchone()
     if not result:
         raise HTTPException(status_code=404, detail="Transação não encontrada.")
@@ -391,23 +515,23 @@ def delete_transaction(transaction_id: int) -> dict:
 
 
 @app.delete("/api/transacoes")
-def delete_all_transactions() -> dict:
+def delete_all_transactions(user: dict = Depends(current_user)) -> dict:
     with connection() as conn:
         result = conn.execute(
             "DELETE FROM financeiro.transacoes WHERE usuario_id = %s RETURNING id",
-            (DEFAULT_USER_ID,),
+            (user["id"],),
         ).fetchall()
         conn.execute(
             "DELETE FROM financeiro.importacoes WHERE usuario_id = %s",
-            (DEFAULT_USER_ID,),
+            (user["id"],),
         )
     return {"message": f"{len(result)} lançamentos excluídos.", "excluidos": len(result)}
 
 
 @app.post("/api/transacoes/manual", status_code=201)
-def create_manual(transaction: ManualTransaction) -> dict:
+def create_manual(transaction: ManualTransaction, user: dict = Depends(current_user)) -> dict:
     values = {
-        "usuario_id": DEFAULT_USER_ID,
+        "usuario_id": user["id"],
         "data": transaction.data,
         "descricao": transaction.descricao,
         "valor": -abs(transaction.valor),
@@ -421,17 +545,17 @@ def create_manual(transaction: ManualTransaction) -> dict:
 
 
 @app.post("/api/importar", status_code=201)
-async def import_statement(file: UploadFile = File(...)) -> dict:
+async def import_statement(file: UploadFile = File(...), user: dict = Depends(current_user)) -> dict:
     if not file.filename or not file.filename.lower().endswith((".pdf", ".txt", ".csv")):
         raise HTTPException(status_code=400, detail="Envie um arquivo PDF, TXT ou CSV.")
     content = await file.read()
-    transactions = parse_csv_statement(content, file.filename) if file.filename.lower().endswith(".csv") else parse_statement(extract_pdf_text(content, file.filename), file.filename)
+    transactions = parse_csv_statement(content, file.filename, user["id"]) if file.filename.lower().endswith(".csv") else parse_statement(extract_pdf_text(content, file.filename), file.filename, user["id"])
     file_hash = hashlib.sha256(content).hexdigest()
     try:
         with connection() as conn:
             conn.execute(
                 "INSERT INTO financeiro.importacoes (usuario_id, nome_arquivo, hash_arquivo) VALUES (%s, %s, %s)",
-                (DEFAULT_USER_ID, file.filename[:255], file_hash),
+                (user["id"], file.filename[:255], file_hash),
             )
             if transactions:
                 with conn.cursor() as cursor:

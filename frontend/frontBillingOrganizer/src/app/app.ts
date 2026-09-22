@@ -34,6 +34,9 @@ interface Category {
 export class App {
   private readonly http = inject(HttpClient);
   protected readonly loading = signal(true);
+  protected readonly authenticated = signal(false);
+  protected readonly authMode = signal<'login' | 'register'>('login');
+  protected readonly authLoading = signal(false);
   protected readonly message = signal('');
   protected readonly error = signal('');
   protected readonly theme = signal<'dark' | 'light'>('dark');
@@ -49,13 +52,53 @@ export class App {
   protected manual = { descricao: '', valor: null as number | null, data: new Date().toISOString().slice(0, 10), categoria: 'Outros', metodo_pagamento: '' };
   protected editDraft = { descricao: '', categoria: 'Outros' };
   protected newCategory = '';
+  protected authForm = { nome: '', email: '', senha: '' };
 
   constructor() {
     afterNextRender(() => {
       const savedTheme = localStorage.getItem('billing-theme');
       if (savedTheme === 'light' || savedTheme === 'dark') this.theme.set(savedTheme);
-      this.loadDashboard();
-      this.loadCategories();
+      this.restoreSession();
+    });
+  }
+
+  protected restoreSession(): void {
+    this.http.get('/api/auth/me').subscribe({
+      next: () => {
+        this.authenticated.set(true);
+        this.loadDashboard();
+        this.loadCategories();
+      },
+      error: () => this.loading.set(false),
+    });
+  }
+
+  protected submitAuth(): void {
+    this.authLoading.set(true);
+    this.error.set('');
+    const endpoint = this.authMode() === 'login' ? '/api/auth/login' : '/api/auth/cadastro';
+    this.http.post(endpoint, this.authForm).subscribe({
+      next: () => {
+        this.authenticated.set(true);
+        this.authLoading.set(false);
+        this.authForm = { nome: '', email: '', senha: '' };
+        this.loadDashboard();
+        this.loadCategories();
+      },
+      error: (response) => {
+        this.authLoading.set(false);
+        this.error.set(response.error?.detail ?? 'Não foi possível autenticar.');
+      },
+    });
+  }
+
+  protected logout(): void {
+    this.http.post('/api/auth/logout', {}).subscribe({
+      next: () => {
+        this.authenticated.set(false);
+        this.authMode.set('login');
+        this.message.set('Sessão encerrada.');
+      },
     });
   }
 
