@@ -1,7 +1,8 @@
+@if (authenticated()) {
 <main class="shell" [class.theme-dark]="theme() === 'dark'" [class.theme-light]="theme() === 'light'">
   <header class="topbar">
     <div class="brand"><span class="brand-mark">B</span><div><strong>Billing</strong><span>Organizer</span></div></div>
-    <div class="topbar-actions"><div class="period">VISÃO GERAL <span>•</span> {{ summary().quantidade }} lançamentos</div><button class="theme-toggle" type="button" (click)="toggleTheme()" [attr.aria-label]="theme() === 'dark' ? 'Ativar tema claro' : 'Ativar tema escuro'"><span>{{ theme() === 'dark' ? '☼' : '☾' }}</span><small>{{ theme() === 'dark' ? 'LIGHT' : 'DARK' }}</small></button></div>
+    <div class="topbar-actions"><div class="period">VISÃO GERAL <span>•</span> {{ summary().quantidade }} lançamentos</div><button class="theme-toggle" type="button" (click)="toggleTheme()" [attr.aria-label]="theme() === 'dark' ? 'Ativar tema claro' : 'Ativar tema escuro'"><span>{{ theme() === 'dark' ? '☼' : '☾' }}</span><small>{{ theme() === 'dark' ? 'LIGHT' : 'DARK' }}</small></button><button class="logout-button" type="button" (click)="logout()">Sair</button></div>
   </header>
 
   <section class="intro">
@@ -42,3 +43,21 @@
 
   <section class="bottom-grid"><div class="panel category-panel"><div class="panel-heading"><div><p class="eyebrow">Onde seu dinheiro vai</p><h2>Por categoria</h2></div></div>@if (summary().categorias.length) { @for (category of summary().categorias; track category.nome) {<div class="category-row"><div><span>{{ category.nome }}</span><strong>{{ formatCurrency(category.total) }}</strong></div><div class="bar"><i [style.width.%]="summary().gastos ? (category.total / summary().gastos) * 100 : 0"></i></div></div>} } @else { <div class="empty">As categorias aparecem após os lançamentos.</div> }</div><div class="panel chart-panel"><p class="eyebrow">Distribuição</p><h2>Gastos por categoria</h2><div class="chart-wrap"><div class="pie-chart" [style.background]="categoryChartStyle()"></div><div class="chart-legend">@for (category of summary().categorias; track category.nome; let index = $index) {<div><i [class]="'legend-dot legend-' + (index % 6)"></i><span>{{ category.nome }}</span><strong>{{ formatCurrency(category.total) }}</strong></div>}</div></div></div><div class="panel top-panel"><p class="eyebrow">Padrões de consumo</p><h2>Maiores gastos</h2>@if (summary().maiores_gastos.length) { @for (item of summary().maiores_gastos; track item.nome) {<div class="top-row"><span>{{ item.nome }}</span><strong>{{ formatCurrency(item.total) }}</strong></div>} } @else { <div class="empty">Sem dados suficientes ainda.</div> }</div></section>
 </main>
+} @else {
+<main class="auth-shell">
+  <section class="auth-card">
+    <div class="brand"><span class="brand-mark">B</span><div><strong>Billing</strong><span>Organizer</span></div></div>
+    <p class="eyebrow">{{ authMode() === 'login' ? 'Bem-vindo de volta' : 'Seu espaço financeiro' }}</p>
+    <h1>{{ authMode() === 'login' ? 'Entre na sua conta.' : 'Crie sua conta.' }}</h1>
+    <p class="auth-subtitle">Organize seus lançamentos em um espaço só seu.</p>
+    <form (ngSubmit)="submitAuth()">
+      @if (authMode() === 'register') { <label>Nome<input name="nome" [(ngModel)]="authForm.nome" autocomplete="name" required></label> }
+      <label>E-mail<input name="email" [(ngModel)]="authForm.email" type="email" autocomplete="email" required></label>
+      <label>Senha<input name="senha" [(ngModel)]="authForm.senha" type="password" [minLength]="authMode() === 'register' ? 8 : 1" autocomplete="current-password" required></label>
+      <button class="button primary" type="submit" [disabled]="authLoading()">{{ authLoading() ? 'Aguarde...' : (authMode() === 'login' ? 'Entrar' : 'Criar conta') }}</button>
+    </form>
+    @if (error()) { <div class="notice error">{{ error() }}</div> }
+    <button class="auth-switch" type="button" (click)="authMode.set(authMode() === 'login' ? 'register' : 'login'); error.set('')">{{ authMode() === 'login' ? 'Ainda não tenho uma conta' : 'Já tenho uma conta' }}</button>
+  </section>
+</main>
+}
