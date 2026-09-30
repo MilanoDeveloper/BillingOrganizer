@@ -25,6 +25,11 @@ interface Category {
   nome: string;
 }
 
+interface MonthlyBill {
+  name: string;
+  paid: boolean;
+}
+
 @Component({
   imports: [FormsModule],
   selector: 'app-root',
@@ -46,6 +51,9 @@ export class App {
   protected readonly categories = signal<Category[]>([]);
   protected readonly editingId = signal<number | null>(null);
   protected readonly summary = signal<Summary>({ gastos: 0, entradas: 0, quantidade: 0, categorias: [], maiores_gastos: [] });
+  protected readonly checklistMonth = signal(this.currentMonth());
+  protected readonly monthlyBills = signal<MonthlyBill[]>(this.defaultBills().map((name) => ({ name, paid: false })));
+  private readonly checklistUserId = signal<number | null>(null);
   protected dataInicio = '';
   protected dataFim = '';
   protected searchTerm = '';
@@ -63,9 +71,11 @@ export class App {
   }
 
   protected restoreSession(): void {
-    this.http.get('/api/auth/me').subscribe({
-      next: () => {
+    this.http.get<{ id: number }>('/api/auth/me').subscribe({
+      next: (user) => {
         this.authenticated.set(true);
+        this.checklistUserId.set(user.id);
+        this.loadMonthlyChecklist();
         this.loadDashboard();
         this.loadCategories();
       },
@@ -77,9 +87,11 @@ export class App {
     this.authLoading.set(true);
     this.error.set('');
     const endpoint = this.authMode() === 'login' ? '/api/auth/login' : '/api/auth/cadastro';
-    this.http.post(endpoint, this.authForm).subscribe({
-      next: () => {
+    this.http.post<{ id: number }>(endpoint, this.authForm).subscribe({
+      next: (user) => {
         this.authenticated.set(true);
+        this.checklistUserId.set(user.id);
+        this.loadMonthlyChecklist();
         this.authLoading.set(false);
         this.authForm = { nome: '', email: '', senha: '' };
         this.loadDashboard();
@@ -110,6 +122,63 @@ export class App {
 
   protected toggleTransactions(): void {
     this.transactionsExpanded.update((expanded) => !expanded);
+  }
+
+  protected changeChecklistMonth(offset: number): void {
+    const [year, month] = this.checklistMonth().split('-').map(Number);
+    const date = new Date(year, month - 1 + offset, 1);
+    this.checklistMonth.set(`${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`);
+    this.loadMonthlyChecklist();
+  }
+
+  protected checklistMonthLabel(): string {
+    const [year, month] = this.checklistMonth().split('-').map(Number);
+    return new Intl.DateTimeFormat('pt-BR', { month: 'long', year: 'numeric' }).format(new Date(year, month - 1, 1));
+  }
+
+  protected completedBills(): number {
+    return this.monthlyBills().filter((bill) => bill.paid).length;
+  }
+
+  protected checklistProgressPercent(): number {
+    const total = this.monthlyBills().length;
+    return total ? Math.round((this.completedBills() / total) * 100) : 0;
+  }
+
+  protected toggleBill(name: string, event: Event): void {
+    const paid = (event.target as HTMLInputElement).checked;
+    const bills = this.monthlyBills().map((bill) => bill.name === name ? { ...bill, paid } : bill);
+    this.monthlyBills.set(bills);
+    const userId = this.checklistUserId();
+    if (userId !== null) {
+      const paidBills = Object.fromEntries(bills.map((bill) => [bill.name, bill.paid]));
+      localStorage.setItem(this.checklistStorageKey(userId, this.checklistMonth()), JSON.stringify(paidBills));
+    }
+  }
+
+  private loadMonthlyChecklist(): void {
+    const userId = this.checklistUserId();
+    const saved = userId === null ? null : localStorage.getItem(this.checklistStorageKey(userId, this.checklistMonth()));
+    let paidBills: Record<string, boolean> = {};
+    try {
+      paidBills = saved ? JSON.parse(saved) as Record<string, boolean> : {};
+    } catch {
+      paidBills = {};
+    }
+    this.monthlyBills.set(this.defaultBills().map((name) => ({ name, paid: paidBills[name] === true })));
+  }
+
+  private checklistStorageKey(userId: number, month: string): string {
+    return `billing-checklist:${userId}:${month}`;
+  }
+
+  private currentMonth(): string {
+    const now = new Date();
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+  }
+
+  private defaultBills(): string[] {
+    return ['Condomínio', 'Carro', 'Luz', 'Gás', 'Internet', 'IPTU', 'Estacionamento'];
   }
 
   protected categoryChartStyle(): string {
