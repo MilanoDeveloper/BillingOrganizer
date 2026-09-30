@@ -23,6 +23,18 @@
   </section>
 
   <div class="workspace">
+    <section class="panel monthly-checklist" aria-labelledby="checklist-title">
+      <div class="checklist-heading">
+        <div><p class="eyebrow">Contas recorrentes</p><h2 id="checklist-title">Checklist do mês</h2></div>
+        <div class="month-controls"><button class="month-nav" type="button" (click)="changeChecklistMonth(-1)" aria-label="Mês anterior">←</button><strong>{{ checklistMonthLabel() }}</strong><button class="month-nav" type="button" (click)="changeChecklistMonth(1)" aria-label="Próximo mês">→</button></div>
+      </div>
+      <div class="checklist-progress"><div><span>{{ completedBills() }} de {{ monthlyBills().length }} pagas</span><strong>{{ checklistProgressPercent() }}%</strong></div><div class="checklist-track" role="progressbar" [attr.aria-valuenow]="completedBills()" [attr.aria-valuemin]="0" [attr.aria-valuemax]="monthlyBills().length" aria-label="Contas pagas no mês"><i [style.width.%]="checklistProgressPercent()"></i></div></div>
+      <div class="bill-list">
+        @for (bill of monthlyBills(); track bill.name) {
+          <label class="bill-item" [class.is-paid]="bill.paid"><input type="checkbox" [checked]="bill.paid" (change)="toggleBill(bill.name, $event)"><span class="bill-name">{{ bill.name }}</span><span class="bill-state">{{ bill.paid ? 'Pago' : 'Pendente' }}</span></label>
+        }
+      </div>
+    </section>
     <section class="panel transactions-panel">
       <div class="panel-heading"><div><p class="eyebrow">Atividade recente</p><h2>Seus lançamentos</h2></div><div class="panel-actions"><span class="count">{{ transactions().length }} recentes</span><button class="collapse-button" type="button" (click)="toggleTransactions()" [attr.aria-expanded]="transactionsExpanded()" [attr.aria-label]="transactionsExpanded() ? 'Recolher lançamentos' : 'Expandir lançamentos'">{{ transactionsExpanded() ? '−' : '+' }}</button><button class="icon-button delete-button" type="button" (click)="deleteAllTransactions()" title="Excluir tudo" aria-label="Excluir todos os lançamentos">⌫</button></div></div>
       @if (transactionsExpanded() && transactions().length) {

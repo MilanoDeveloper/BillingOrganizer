@@ -79,3 +79,20 @@ form { margin-top: 23px; }label { display: block; color: #737d73; font-size: 11p
 .auth-card { width: min(100%, 420px); padding: 38px; border: 1px solid #263d35; background: #10191a; box-shadow: 0 18px 50px rgba(0,0,0,.3); }
 .auth-card .brand { margin-bottom: 70px; }.auth-card h1 { color: #e5f9e7; font-family: 'Courier New', monospace; font-size: clamp(34px, 8vw, 52px); letter-spacing: -.06em; line-height: .95; margin: 0; }.auth-subtitle { color: #87a194; margin: 18px 0 28px; }.auth-card label { color: #87a194; }.auth-card input { border-color: #263d35; background: #152322; color: #e5f9e7; }.auth-card .primary { margin-top: 4px; }.auth-card .primary:disabled { cursor: wait; opacity: .65; }.auth-switch { width: 100%; margin-top: 20px; padding: 8px; border: 0; color: #87a194; background: transparent; cursor: pointer; font: inherit; }.auth-switch:hover { color: #72f58b; }.auth-card .notice { margin: 18px 0 0; }
 @media (max-width: 480px) { .auth-card { padding: 28px 22px; }.auth-card .brand { margin-bottom: 52px; } }
+
+.workspace { grid-template-columns: .9fr 1.5fr 1fr; }
+@media (max-width: 960px) { .workspace { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.checklist-heading, .checklist-progress > div:first-child { display: flex; justify-content: space-between; align-items: center; gap: 18px; }
+.month-controls { display: flex; align-items: center; gap: 10px; }
+.month-controls strong { min-width: 140px; color: var(--ink); text-align: center; text-transform: capitalize; font-size: 13px; }
+.month-nav { width: 32px; height: 32px; padding: 0; border: 1px solid var(--line); border-radius: 3px; color: var(--accent); background: var(--surface); cursor: pointer; font-size: 18px; }
+.checklist-progress { margin-top: 22px; color: var(--muted); font-size: 11px; }
+.checklist-track { height: 5px; margin-top: 9px; overflow: hidden; border-radius: 4px; background: var(--surface-alt); }
+.checklist-track i { display: block; height: 100%; border-radius: inherit; background: var(--accent); }
+.bill-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 32px; margin-top: 12px; }
+.bill-item { display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; align-items: center; gap: 11px; min-height: 52px; margin: 0; border-bottom: 1px solid var(--line); color: var(--ink); cursor: pointer; }
+.bill-item input { width: 16px; margin: 0; padding: 0; accent-color: var(--accent); }
+.bill-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+.bill-item.is-paid .bill-name { color: var(--muted); text-decoration: line-through; }
+.bill-state { color: var(--muted); font-size: 10px; }
+@media (max-width: 720px) { .checklist-heading { align-items: flex-start; flex-direction: column; }.month-controls { width: 100%; justify-content: space-between; }.bill-list { grid-template-columns: 1fr; } }
