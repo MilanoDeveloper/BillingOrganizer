@@ -140,6 +140,17 @@ Cyberpunk theme layer
 .panel-actions { gap: 8px; }
 .count { padding-top: 5px; font-size: 11px; }
 .collapse-button, .month-nav { width: 30px; height: 30px; padding: 0; border: 1px solid var(--line); border-radius: 6px; cursor: pointer; }
+.transaction-list {
+	max-height: 590px;
+	overflow-y: auto;
+	overscroll-behavior: contain;
+	scrollbar-color: var(--accent) var(--accent-soft);
+	scrollbar-width: thin;
+}
+.transaction-list::-webkit-scrollbar { width: 8px; }
+.transaction-list::-webkit-scrollbar-track { border-radius: 8px; background: var(--accent-soft); }
+.transaction-list::-webkit-scrollbar-thumb { border: 2px solid var(--accent-soft); border-radius: 8px; background: var(--accent); }
+.transaction-list::-webkit-scrollbar-thumb:hover { background: var(--accent-strong); }
 .transaction { display: flex; align-items: center; gap: 12px; padding: 13px 0; border-bottom: 1px solid var(--line); }
 .transaction:last-child { border-bottom: 0; }
 .transaction-icon { display: grid; flex: 0 0 32px; place-items: center; width: 32px; height: 32px; border-radius: 9px; font-weight: 700; }
