@@ -30,6 +30,24 @@ interface MonthlyBill {
   paid: boolean;
 }
 
+const FIXED_CATEGORY_COLORS = new Map([
+  ['Alimentação', '#c87558'],
+  ['Contas fixas', '#6a9d78'],
+  ['Investimentos', '#d3ae62'],
+  ['Lazer', '#8a789e'],
+  ['Moradia', '#5b9bb0'],
+  ['Outros', '#a5a95e'],
+]);
+
+const FIXED_CATEGORY_HUES = new Map([
+  ['Alimentação', 14],
+  ['Contas fixas', 137],
+  ['Investimentos', 42],
+  ['Lazer', 267],
+  ['Moradia', 193],
+  ['Outros', 63],
+]);
+
 @Component({
   imports: [FormsModule],
   selector: 'app-root',
@@ -38,6 +56,8 @@ interface MonthlyBill {
 })
 export class App {
   private readonly http = inject(HttpClient);
+  private readonly assignedCategoryColors = new Map<string, string>();
+  private readonly assignedCategoryHues = new Map<string, number>();
   protected readonly loading = signal(true);
   protected readonly authenticated = signal(false);
   protected readonly authMode = signal<'login' | 'register'>('login');
@@ -186,19 +206,63 @@ export class App {
     const total = this.categoryDistributionTotal();
     if (!total) return 'conic-gradient(#30423b 0 100%)';
     let start = 0;
-    const colors = ['#72f58b', '#a76cff', '#ffcf5c', '#ff6f91', '#57c7ff', '#d7f171'];
     const categoriesWithAmounts = categories
-      .map((category, index) => ({ category, index, total: Number(category.total) }))
-      .filter(({ total: amount }) => Number.isFinite(amount) && amount > 0);
-    const segments = categoriesWithAmounts.map(({ index, total: amount }, segmentIndex) => {
+      .filter((category) => Number.isFinite(Number(category.total)) && Number(category.total) > 0);
+    const segments = categoriesWithAmounts.map((category, segmentIndex) => {
+      const amount = Number(category.total);
       const end = start + (amount / total) * 100;
       const segmentEnd = segmentIndex === categoriesWithAmounts.length - 1 ? 100 : end;
-      const segment = `${colors[index % colors.length]} ${start}% ${segmentEnd}%`;
+      const segment = `${this.categoryColor(category.nome)} ${start}% ${segmentEnd}%`;
       start = end;
       return segment;
     });
     if (!segments.length) return 'conic-gradient(#30423b 0 100%)';
     return `conic-gradient(${segments.join(', ')})`;
+  }
+
+  protected categoryColor(categoryName: string): string {
+    const assignedColor = this.assignedCategoryColors.get(categoryName);
+    if (assignedColor) return assignedColor;
+
+    const fixedColor = FIXED_CATEGORY_COLORS.get(categoryName);
+    const fixedHue = FIXED_CATEGORY_HUES.get(categoryName);
+    if (fixedColor && fixedHue !== undefined) {
+      this.assignedCategoryColors.set(categoryName, fixedColor);
+      this.assignedCategoryHues.set(categoryName, fixedHue);
+      return fixedColor;
+    }
+
+    let hash = 2166136261;
+    for (const character of categoryName) {
+      hash = Math.imul(hash ^ character.charCodeAt(0), 16777619) >>> 0;
+    }
+
+    const initialHue = hash % 360;
+    const usedHues = [...FIXED_CATEGORY_HUES.values(), ...this.assignedCategoryHues.values()];
+    let selectedHue = initialHue;
+    let widestGap = -1;
+    for (let attempt = 0; attempt < 360; attempt += 1) {
+      const hue = (initialHue + attempt * 137.508) % 360;
+      const nearestHue = Math.min(
+        ...usedHues.map((usedHue) => {
+          const distance = Math.abs(hue - usedHue);
+          return Math.min(distance, 360 - distance);
+        }),
+      );
+      if (nearestHue > widestGap) {
+        selectedHue = hue;
+        widestGap = nearestHue;
+      }
+      if (nearestHue >= 26) {
+        selectedHue = hue;
+        break;
+      }
+    }
+
+    const color = `hsl(${Math.round(selectedHue)} 62% 56%)`;
+    this.assignedCategoryColors.set(categoryName, color);
+    this.assignedCategoryHues.set(categoryName, selectedHue);
+    return color;
   }
 
   protected categoryDistributionTotal(): number {
