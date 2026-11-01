@@ -30,6 +30,12 @@ interface MonthlyBill {
   paid: boolean;
 }
 
+interface DatePickerDay {
+  key: string;
+  day: number;
+  isCurrentMonth: boolean;
+}
+
 const FIXED_CATEGORY_COLORS = new Map([
   ['Alimentação', '#c87558'],
   ['Contas fixas', '#6a9d78'],
@@ -72,6 +78,8 @@ export class App {
   protected readonly editingId = signal<number | null>(null);
   protected readonly summary = signal<Summary>({ gastos: 0, entradas: 0, quantidade: 0, categorias: [], maiores_gastos: [] });
   protected readonly checklistMonth = signal(this.currentMonth());
+  protected readonly datePickerMonth = signal(this.currentMonth());
+  protected readonly datePickerOpen = signal(false);
   protected readonly monthlyBills = signal<MonthlyBill[]>(this.defaultBills().map((name) => ({ name, paid: false })));
   private readonly checklistUserId = signal<number | null>(null);
   protected dataInicio = '';
@@ -149,6 +157,80 @@ export class App {
     const date = new Date(year, month - 1 + offset, 1);
     this.checklistMonth.set(`${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`);
     this.loadMonthlyChecklist();
+  }
+
+  protected toggleDatePicker(): void {
+    if (this.datePickerOpen()) {
+      this.datePickerOpen.set(false);
+      return;
+    }
+    this.datePickerMonth.set(this.dataInicio ? this.dataInicio.slice(0, 7) : this.currentMonth());
+    this.datePickerOpen.set(true);
+  }
+
+  protected closeDatePicker(): void {
+    this.datePickerOpen.set(false);
+  }
+
+  protected closeDatePickerOnOutsideClick(event: Event): void {
+    const target = event.target;
+    if (target instanceof Element && !target.closest('.date-range-picker')) {
+      this.datePickerOpen.set(false);
+    }
+  }
+
+  protected changeDatePickerMonth(offset: number): void {
+    const [year, month] = this.datePickerMonth().split('-').map(Number);
+    const date = new Date(year, month - 1 + offset, 1);
+    this.datePickerMonth.set(`${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`);
+  }
+
+  protected datePickerMonthLabel(): string {
+    const [year, month] = this.datePickerMonth().split('-').map(Number);
+    return new Intl.DateTimeFormat('pt-BR', { month: 'long', year: 'numeric' }).format(new Date(year, month - 1, 1));
+  }
+
+  protected datePickerDays(): DatePickerDay[] {
+    const [year, month] = this.datePickerMonth().split('-').map(Number);
+    const firstOfMonth = new Date(year, month - 1, 1);
+    const leadingDays = (firstOfMonth.getDay() + 6) % 7;
+    const daysInMonth = new Date(year, month, 0).getDate();
+    const cellCount = Math.ceil((leadingDays + daysInMonth) / 7) * 7;
+
+    return Array.from({ length: cellCount }, (_, index) => {
+      const date = new Date(year, month - 1, index - leadingDays + 1);
+      return {
+        key: this.dateKey(date),
+        day: date.getDate(),
+        isCurrentMonth: date.getMonth() === month - 1,
+      };
+    });
+  }
+
+  protected selectDatePickerDay(date: string): void {
+    if (!this.dataInicio || this.dataFim) {
+      this.dataInicio = date;
+      this.dataFim = '';
+    } else if (date < this.dataInicio) {
+      this.dataInicio = date;
+    } else {
+      this.dataFim = date;
+      this.datePickerOpen.set(false);
+    }
+    this.error.set('');
+  }
+
+  protected formatPickerDate(date: string): string {
+    return new Intl.DateTimeFormat('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric' })
+      .format(new Date(`${date}T12:00:00`));
+  }
+
+  protected isDateInSelectedRange(date: string): boolean {
+    return !!this.dataInicio && !!this.dataFim && date > this.dataInicio && date < this.dataFim;
+  }
+
+  private dateKey(date: Date): string {
+    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
   }
 
   protected checklistMonthLabel(): string {
@@ -329,6 +411,7 @@ export class App {
       return;
     }
     this.error.set('');
+    this.datePickerOpen.set(false);
     this.message.set(this.dataInicio ? 'Período aplicado.' : 'Exibindo todos os lançamentos.');
     this.loadDashboard();
   }
@@ -336,6 +419,7 @@ export class App {
   protected clearDateFilter(): void {
     this.dataInicio = '';
     this.dataFim = '';
+    this.datePickerOpen.set(false);
     this.applyDateFilter();
   }
 
