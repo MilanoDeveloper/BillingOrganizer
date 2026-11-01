@@ -183,7 +183,7 @@ def ensure_default_user() -> None:
 
 
 def parse_brazilian_amount(value: str) -> Decimal:
-    normalized = value.strip().replace("R$", "")
+    normalized = value.strip().replace("R$", "").replace("\u2212", "-")
     normalized = "".join(normalized.split())
     if "," in normalized:
         normalized = normalized.replace(".", "").replace(",", ".")
@@ -263,30 +263,93 @@ def parse_csv_statement(content: bytes, origin: str, user_id: int) -> list[dict]
 
 def parse_statement(text: str, origin: str, user_id: int) -> list[dict]:
     transactions = []
-    line_pattern = re.compile(
-        r"^(?P<day>\d{2}/\d{2}/\d{4})\s+(?P<description>.+?)\s+(?P<amount>-?\d{1,3}(?:\.\d{3})*,\d{2})$"
+    date_pattern = re.compile(
+        r"(?P<day>\d{1,2}/\d{1,2}/\d{4}|\d{1,2}\s+(?:de\s+)?[A-Za-zÀ-ÿ.]+\s+(?:de\s+)?\d{4})",
+        re.IGNORECASE,
     )
-    for raw_line in text.splitlines():
-        line = " ".join(raw_line.split())
-        match = line_pattern.match(line)
-        if not match or "SALDO DO DIA" in match.group("description").upper():
+    amount_pattern = re.compile(
+        r"(?<!\w)(?P<amount>[+\-\u2212]?\s*(?:R\$\s*)?(?:\d{1,3}(?:[.\s]\d{3})+|\d+)[,.]\d{2})(?!\d)",
+        re.IGNORECASE,
+    )
+    lines = [" ".join(line.split()) for line in text.splitlines()]
+
+    def transaction(day: str, description: str, amount: str) -> dict | None:
+        description = normalize_description(description)
+        if not description or "SALDO DO DIA" in description.upper():
+            return None
+        try:
+            transaction_date = parse_statement_date(day)
+            value = parse_brazilian_amount(amount)
+        except (ValueError, InvalidOperation):
+            return None
+        return {
+            "usuario_id": user_id,
+            "data": transaction_date,
+            "descricao": description[:255],
+            "valor": value,
+            "origem": origin[:100],
+            "categoria": categorize_description(description),
+            "metodo_pagamento": "Extrato",
+            "tipo_entrada": "PDF",
+        }
+
+    parsed_date_lines: set[int] = set()
+    for index, line in enumerate(lines):
+        date_match = date_pattern.search(line)
+        amount_match = amount_pattern.search(line)
+        if not date_match or not amount_match:
             continue
-        description = normalize_description(match.group("description"))
-        if not description:
+        description = f"{line[:date_match.start()]} {line[date_match.end():amount_match.start()]}".strip()
+        parsed = transaction(date_match.group("day"), description, amount_match.group("amount"))
+        if parsed is None:
             continue
-        transactions.append(
-            {
-                "usuario_id": user_id,
-                "data": datetime.strptime(match.group("day"), "%d/%m/%Y").date(),
-                "descricao": description[:255],
-                "valor": parse_brazilian_amount(match.group("amount")),
-                "origem": origin[:100],
-                "categoria": categorize_description(description),
-                "metodo_pagamento": "Extrato",
-                "tipo_entrada": "PDF",
-            }
-        )
+        transactions.append(parsed)
+        parsed_date_lines.add(index)
+
+    for index, line in enumerate(lines):
+        date_match = re.fullmatch(r"\s*(\d{1,2}/\d{1,2}/\d{4})\s*", line)
+        if not date_match or index in parsed_date_lines:
+            continue
+        description_lines = []
+        amount_match = None
+        for following_line in lines[index + 1:]:
+            if re.fullmatch(r"\s*\d{1,2}/\d{1,2}/\d{4}\s*", following_line):
+                break
+            amount_match = amount_pattern.search(following_line)
+            if amount_match:
+                break
+            if following_line:
+                description_lines.append(following_line)
+        if not amount_match:
+            continue
+        parsed = transaction(date_match.group(1), " ".join(description_lines), amount_match.group("amount"))
+        if parsed is not None:
+            transactions.append(parsed)
     return transactions
+
+
+def parse_statement_date(value: str) -> date:
+    if "/" in value:
+        return datetime.strptime(value, "%d/%m/%Y").date()
+    match = re.fullmatch(
+        r"\s*(\d{1,2})\s+(?:de\s+)?([A-Za-zÀ-ÿ.]+)\s+(?:de\s+)?(\d{4})\s*",
+        value,
+        re.IGNORECASE,
+    )
+    if not match:
+        raise ValueError(f"Data inválida: {value}")
+    month_name = unicodedata.normalize("NFKD", match.group(2).lower())
+    month_name = "".join(character for character in month_name if not unicodedata.combining(character)).rstrip(".")
+    months = {
+        "jan": 1, "janeiro": 1, "fev": 2, "fevereiro": 2, "mar": 3, "marco": 3,
+        "abr": 4, "abril": 4, "mai": 5, "maio": 5, "jun": 6, "junho": 6,
+        "jul": 7, "julho": 7, "ago": 8, "agosto": 8, "set": 9, "setembro": 9,
+        "out": 10, "outubro": 10, "nov": 11, "novembro": 11, "dez": 12, "dezembro": 12,
+    }
+    month = months.get(month_name)
+    if month is None:
+        raise ValueError(f"Mês inválido: {match.group(2)}")
+    return date(int(match.group(3)), month, int(match.group(1)))
 
 
 def insert_transactions(transactions: list[dict]) -> int:
@@ -549,7 +612,15 @@ async def import_statement(file: UploadFile = File(...), user: dict = Depends(cu
     if not file.filename or not file.filename.lower().endswith((".pdf", ".txt", ".csv")):
         raise HTTPException(status_code=400, detail="Envie um arquivo PDF, TXT ou CSV.")
     content = await file.read()
-    transactions = parse_csv_statement(content, file.filename, user["id"]) if file.filename.lower().endswith(".csv") else parse_statement(extract_pdf_text(content, file.filename), file.filename, user["id"])
+    if file.filename.lower().endswith(".csv"):
+        transactions = parse_csv_statement(content, file.filename, user["id"])
+    else:
+        transactions = parse_statement(extract_pdf_text(content, file.filename), file.filename, user["id"])
+    if not transactions:
+        raise HTTPException(
+            status_code=422,
+            detail="Nenhum lançamento foi reconhecido no arquivo. Confira se ele contém linhas com data, descrição e valor.",
+        )
     file_hash = hashlib.sha256(content).hexdigest()
     try:
         with connection() as conn:
@@ -557,17 +628,16 @@ async def import_statement(file: UploadFile = File(...), user: dict = Depends(cu
                 "INSERT INTO financeiro.importacoes (usuario_id, nome_arquivo, hash_arquivo) VALUES (%s, %s, %s)",
                 (user["id"], file.filename[:255], file_hash),
             )
-            if transactions:
-                with conn.cursor() as cursor:
-                    cursor.executemany(
-                        """
-                        INSERT INTO financeiro.transacoes
-                        (usuario_id, data, descricao, valor, origem, categoria, metodo_pagamento, tipo_entrada)
-                        VALUES (%(usuario_id)s, %(data)s, %(descricao)s, %(valor)s, %(origem)s,
-                                %(categoria)s, %(metodo_pagamento)s, %(tipo_entrada)s)
-                        """,
-                        transactions,
-                    )
+            with conn.cursor() as cursor:
+                cursor.executemany(
+                    """
+                    INSERT INTO financeiro.transacoes
+                    (usuario_id, data, descricao, valor, origem, categoria, metodo_pagamento, tipo_entrada)
+                    VALUES (%(usuario_id)s, %(data)s, %(descricao)s, %(valor)s, %(origem)s,
+                            %(categoria)s, %(metodo_pagamento)s, %(tipo_entrada)s)
+                    """,
+                    transactions,
+                )
             imported = len(transactions)
     except UniqueViolation as error:
         raise HTTPException(status_code=409, detail="Este arquivo já foi importado anteriormente.") from error
