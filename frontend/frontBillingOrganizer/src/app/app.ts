@@ -183,18 +183,37 @@ export class App {
 
   protected categoryChartStyle(): string {
     const categories = this.summary().categorias;
-    const total = this.summary().gastos;
+    const total = this.categoryDistributionTotal();
     if (!total) return 'conic-gradient(#30423b 0 100%)';
     let start = 0;
     const colors = ['#72f58b', '#a76cff', '#ffcf5c', '#ff6f91', '#57c7ff', '#d7f171'];
-    const segments = categories.filter((category) => category.total > 0).map((category, index) => {
-      const end = start + (category.total / total) * 100;
-      const segment = `${colors[index % colors.length]} ${start}% ${end}%`;
+    const categoriesWithAmounts = categories
+      .map((category, index) => ({ category, index, total: Number(category.total) }))
+      .filter(({ total: amount }) => Number.isFinite(amount) && amount > 0);
+    const segments = categoriesWithAmounts.map(({ index, total: amount }, segmentIndex) => {
+      const end = start + (amount / total) * 100;
+      const segmentEnd = segmentIndex === categoriesWithAmounts.length - 1 ? 100 : end;
+      const segment = `${colors[index % colors.length]} ${start}% ${segmentEnd}%`;
       start = end;
       return segment;
     });
     if (!segments.length) return 'conic-gradient(#30423b 0 100%)';
     return `conic-gradient(${segments.join(', ')})`;
+  }
+
+  protected categoryDistributionTotal(): number {
+    return this.summary().categorias.reduce((sum, category) => {
+      const total = Number(category.total);
+      return sum + (Number.isFinite(total) && total > 0 ? total : 0);
+    }, 0);
+  }
+
+  protected categoryDistributionPercent(category: { total: number }): number {
+    const total = Number(category.total);
+    const distributionTotal = this.categoryDistributionTotal();
+    return distributionTotal && Number.isFinite(total) && total > 0
+      ? Math.min((total / distributionTotal) * 100, 100)
+      : 0;
   }
 
   protected loadDashboard(): void {

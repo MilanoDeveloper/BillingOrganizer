@@ -509,10 +509,10 @@ def summary(
         ).fetchone()
         categories = conn.execute(
             """
-            WITH gastos_filtrados AS (
+            WITH movimentacoes_filtradas AS (
                 SELECT categoria, ABS(valor) AS total
                 FROM financeiro.transacoes
-                WHERE usuario_id = %s AND valor < 0
+                WHERE usuario_id = %s
                   AND (%s::date IS NULL OR data >= %s::date)
                   AND (%s::date IS NULL OR data <= %s::date)
                   AND (%s::text IS NULL OR regexp_replace(descricao, '[[:space:]]*[0-9]{2}/[0-9]{2}$', '') ILIKE '%%' || %s::text || '%%')
@@ -523,11 +523,11 @@ def summary(
                 WHERE usuario_id = %s
                 UNION
                 SELECT categoria AS nome
-                FROM gastos_filtrados
+                FROM movimentacoes_filtradas
             )
-            SELECT categorias_usuario.nome, COALESCE(SUM(gastos_filtrados.total), 0) AS total
+            SELECT categorias_usuario.nome, COALESCE(SUM(movimentacoes_filtradas.total), 0) AS total
             FROM categorias_usuario
-            LEFT JOIN gastos_filtrados ON gastos_filtrados.categoria = categorias_usuario.nome
+            LEFT JOIN movimentacoes_filtradas ON movimentacoes_filtradas.categoria = categorias_usuario.nome
             GROUP BY categorias_usuario.nome
             ORDER BY total DESC, categorias_usuario.nome
             """,
