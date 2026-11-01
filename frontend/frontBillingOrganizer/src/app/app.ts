@@ -332,7 +332,12 @@ export class App {
     formData.append('file', file);
     this.http.post<{ message: string }>('/api/importar', formData).subscribe({
       next: (response) => {
-        this.message.set(response.message);
+        const filtersAreActive = this.dataInicio || this.dataFim || this.searchTerm.trim();
+        this.message.set(
+          filtersAreActive
+            ? `${response.message} Os filtros atuais continuam aplicados; lançamentos fora deles não aparecem na lista.`
+            : response.message,
+        );
         this.error.set('');
         if (input) input.value = '';
         this.loadDashboard();
