@@ -122,6 +122,27 @@ Cyberpunk theme layer
 .date-filter label { min-width: 140px; margin: 0; }
 .date-filter .search-field { min-width: 180px; }
 .date-filter input { margin-top: 5px; padding: 9px 10px; }
+.date-range-picker { position: relative; flex: 1 1 260px; min-width: 220px; }
+.date-range-label { display: block; margin-bottom: 5px; color: var(--muted); font-size: 11px; font-weight: 700; }
+.date-range-trigger { display: flex; width: 100%; min-height: 39px; align-items: center; justify-content: space-between; gap: 8px; padding: 9px 11px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--ink); cursor: pointer; font: inherit; font-size: 12px; transition: border-color .16s ease, box-shadow .16s ease; }
+.date-range-trigger:hover, .date-range-trigger[aria-expanded="true"] { border-color: var(--accent); }
+.date-range-trigger:focus-visible { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 15%, transparent); }
+.date-range-separator, .calendar-icon { color: var(--accent-strong); }
+.calendar-icon { font-size: 16px; }
+.date-picker-popover { position: absolute; z-index: 20; top: calc(100% + 9px); left: 0; width: min(320px, calc(100vw - 36px)); padding: 15px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); box-shadow: 0 14px 36px rgba(20, 30, 24, .18); }
+.date-picker-heading { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+.date-picker-heading strong { color: var(--ink); font-size: 13px; text-transform: capitalize; }
+.date-picker-heading .month-nav { flex: 0 0 30px; color: var(--accent-strong); background: var(--surface-alt); }
+.calendar-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 3px; text-align: center; }
+.calendar-weekdays { margin-bottom: 5px; color: var(--muted); font-size: 10px; font-weight: 700; }
+.calendar-day { display: grid; aspect-ratio: 1; place-items: center; border: 0; border-radius: 50%; background: transparent; color: var(--ink); cursor: pointer; font: inherit; font-size: 11px; transition: background .14s ease, color .14s ease; }
+.calendar-day:not(:disabled):hover { background: var(--accent-soft); }
+.calendar-day.range-start:hover, .calendar-day.range-end:hover, .calendar-day.range-pending:hover { background: var(--accent); }
+.calendar-day:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.calendar-day:disabled { color: var(--muted); opacity: .38; cursor: default; }
+.calendar-day.in-range { border-radius: 5px; background: var(--accent-soft); }
+.calendar-day.range-start, .calendar-day.range-end, .calendar-day.range-pending { border-radius: 50%; background: var(--accent); color: var(--ink); font-weight: 800; }
+.date-picker-hint { margin: 11px 0 0; color: var(--muted); font-size: 11px; text-align: center; }
 .button { border: 0; border-radius: 6px; padding: 11px 15px; cursor: pointer; font-size: 12px; font-weight: 700; }
 .button input { display: none; }
 .primary { width: 100%; margin-top: 8px; }
@@ -140,6 +161,17 @@ Cyberpunk theme layer
 .panel-actions { gap: 8px; }
 .count { padding-top: 5px; font-size: 11px; }
 .collapse-button, .month-nav { width: 30px; height: 30px; padding: 0; border: 1px solid var(--line); border-radius: 6px; cursor: pointer; }
+.transaction-list {
+	max-height: 590px;
+	overflow-y: auto;
+	overscroll-behavior: contain;
+	scrollbar-color: var(--accent) var(--accent-soft);
+	scrollbar-width: thin;
+}
+.transaction-list::-webkit-scrollbar { width: 8px; }
+.transaction-list::-webkit-scrollbar-track { border-radius: 8px; background: var(--accent-soft); }
+.transaction-list::-webkit-scrollbar-thumb { border: 2px solid var(--accent-soft); border-radius: 8px; background: var(--accent); }
+.transaction-list::-webkit-scrollbar-thumb:hover { background: var(--accent-strong); }
 .transaction { display: flex; align-items: center; gap: 12px; padding: 13px 0; border-bottom: 1px solid var(--line); }
 .transaction:last-child { border-bottom: 0; }
 .transaction-icon { display: grid; flex: 0 0 32px; place-items: center; width: 32px; height: 32px; border-radius: 9px; font-weight: 700; }
@@ -295,12 +327,6 @@ input:focus, select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px c
 .top-row strong { color: var(--accent-strong); }
 .pie-chart { box-shadow: none; }
 .chart-legend strong { color: var(--muted); }
-.legend-0 { background: #c87558; }
-.legend-1 { background: #6a9d78; }
-.legend-2 { background: #d3ae62; }
-.legend-3 { background: #8a789e; }
-.legend-4 { background: #5b9bb0; }
-.legend-5 { background: #a5a95e; }
 .checklist-progress { color: var(--muted); }
 .checklist-track { background: var(--surface-alt); }
 .checklist-track i { background: var(--accent); }
