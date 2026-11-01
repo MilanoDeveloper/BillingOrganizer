@@ -183,16 +183,17 @@ export class App {
 
   protected categoryChartStyle(): string {
     const categories = this.summary().categorias;
-    const total = categories.reduce((sum, category) => sum + category.total, 0);
+    const total = this.summary().gastos;
     if (!total) return 'conic-gradient(#30423b 0 100%)';
     let start = 0;
     const colors = ['#72f58b', '#a76cff', '#ffcf5c', '#ff6f91', '#57c7ff', '#d7f171'];
-    const segments = categories.map((category, index) => {
+    const segments = categories.filter((category) => category.total > 0).map((category, index) => {
       const end = start + (category.total / total) * 100;
       const segment = `${colors[index % colors.length]} ${start}% ${end}%`;
       start = end;
       return segment;
     });
+    if (!segments.length) return 'conic-gradient(#30423b 0 100%)';
     return `conic-gradient(${segments.join(', ')})`;
   }
 
@@ -229,6 +230,7 @@ export class App {
         this.newCategory = '';
         this.message.set('Categoria criada.');
         this.error.set('');
+        this.loadDashboard();
       },
       error: (response) => this.error.set(response.error?.detail ?? 'Não foi possível criar a categoria.'),
     });

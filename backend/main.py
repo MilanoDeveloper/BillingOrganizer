@@ -509,16 +509,29 @@ def summary(
         ).fetchone()
         categories = conn.execute(
             """
-            SELECT categoria AS nome, COALESCE(SUM(ABS(valor)), 0) AS total
-            FROM financeiro.transacoes
-                        WHERE usuario_id = %s AND valor < 0
-                              AND (%s::date IS NULL OR data >= %s::date)
-                              AND (%s::date IS NULL OR data <= %s::date)
-                              AND (%s::text IS NULL OR regexp_replace(descricao, '[[:space:]]*[0-9]{2}/[0-9]{2}$', '') ILIKE '%%' || %s::text || '%%')
-            GROUP BY categoria
-            ORDER BY total DESC
+            WITH gastos_filtrados AS (
+                SELECT categoria, ABS(valor) AS total
+                FROM financeiro.transacoes
+                WHERE usuario_id = %s AND valor < 0
+                  AND (%s::date IS NULL OR data >= %s::date)
+                  AND (%s::date IS NULL OR data <= %s::date)
+                  AND (%s::text IS NULL OR regexp_replace(descricao, '[[:space:]]*[0-9]{2}/[0-9]{2}$', '') ILIKE '%%' || %s::text || '%%')
+            ),
+            categorias_usuario AS (
+                SELECT nome
+                FROM financeiro.categorias
+                WHERE usuario_id = %s
+                UNION
+                SELECT categoria AS nome
+                FROM gastos_filtrados
+            )
+            SELECT categorias_usuario.nome, COALESCE(SUM(gastos_filtrados.total), 0) AS total
+            FROM categorias_usuario
+            LEFT JOIN gastos_filtrados ON gastos_filtrados.categoria = categorias_usuario.nome
+            GROUP BY categorias_usuario.nome
+            ORDER BY total DESC, categorias_usuario.nome
             """,
-                        period_params,
+            (*period_params, user["id"]),
         ).fetchall()
         grouped = conn.execute(
             """
